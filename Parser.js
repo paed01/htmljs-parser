@@ -47,6 +47,77 @@ const BODY_STATIC_TEXT = 2;// Body of a tag is treated as text and placeholders 
 const EMPTY_ATTRIBUTES = [];
 const htmlTags = require('./html-tags');
 
+class TagNamePart {
+    constructor(parent, type) {
+        this.parent = parent;
+        this._parser = parent._parser;
+        this.type = type;
+        this.stringParts = [];
+        this.rawParts = [];
+        this.text = '';
+    }
+    _endText() {
+        const text = this.text;
+        if (!text) return;
+        const parser = this._parser;
+
+        this.stringParts.push(JSON.stringify(text));
+        this.rawParts.push({
+            text: text,
+            pos: parser.pos - text.length,
+            endPos: parser.pos
+        });
+
+        this.text = '';
+    }
+    addPlaceholder(placeholder) {
+        const startPos = placeholder.pos + (placeholder.escape ? 2 : 3);
+        const endPos = placeholder.endPos - 1;
+        this._endText();
+        this.stringParts.push('(' + placeholder.value + ')');
+        this.rawParts.push({
+            expression: this._parser.src.slice(startPos, endPos),
+            pos: startPos,
+            endPos: endPos
+        });
+    }
+    end() {
+        this._endText();
+
+        const expression = this.stringParts.join('+');
+
+        if (this.type === 'id') {
+            this._parser.currentOpenTag.shorthandId = {
+                value: expression,
+                rawParts: this.rawParts
+            };
+        } else if (this.type === 'class') {
+            const parser = this._parser;
+            if (!parser.currentOpenTag.shorthandClassNames) {
+                parser.currentOpenTag.shorthandClassNames = [];
+            }
+
+            parser.currentOpenTag.shorthandClassNames.push({
+                value: expression,
+                rawParts: this.rawParts
+            });
+        }
+    }
+}
+
+class Part {
+    constructor(parser) {
+        this._parser = parser;
+        this.pos = parser.pos;
+        this.parentState = parser.state;
+        this.currentPart = null;
+        this.hasId = false;
+    }
+    beginPart(type) {
+        this.currentPart = new TagNamePart(this, type);
+    }
+}
+
 module.exports = class Parser extends BaseParser {
     constructor(listeners, options) {
         super(options);
@@ -186,13 +257,8 @@ module.exports = class Parser extends BaseParser {
         this.enterState(WithinOpenTagState);
     }
     beginPart() {
-        const currentPart = this.currentPart = {
-            pos: this.pos,
-            parentState: this.state
-        };
-
+        const currentPart = this.currentPart = new Part(this);
         this.context.partStack.push(currentPart);
-
         return currentPart;
     }
     endPart() {
@@ -593,65 +659,8 @@ module.exports = class Parser extends BaseParser {
         this.enterState(CheckTrailingWhiteSpaceState);
     }
     beginTagNameShorthand() {
-        var parser = this;
-        var shorthand = this.beginPart();
-        shorthand.currentPart = null;
-        shorthand.hasId = false;
-        shorthand.beginPart = function(type) {
-            shorthand.currentPart = {
-                type: type,
-                stringParts: [],
-                rawParts: [],
-                text: '',
-                _endText() {
-                    var text = this.text;
-
-                    if (text) {
-                        this.stringParts.push(JSON.stringify(text));
-                        this.rawParts.push({
-                            text: text,
-                            pos: parser.pos - text.length,
-                            endPos: parser.pos
-                        });
-                    }
-
-                    this.text = '';
-                },
-                addPlaceholder(placeholder) {
-                    var startPos = placeholder.pos + (placeholder.escape ? 2 : 3);
-                    var endPos = placeholder.endPos - 1;
-                    this._endText();
-                    this.stringParts.push('(' + placeholder.value + ')');
-                    this.rawParts.push({
-                        expression: parser.src.slice(startPos, endPos),
-                        pos: startPos,
-                        endPos: endPos
-                    });
-                },
-                end() {
-                    this._endText();
-
-                    var expression = this.stringParts.join('+');
-
-                    if (type === 'id') {
-                        parser.currentOpenTag.shorthandId = {
-                            value: expression,
-                            rawParts: this.rawParts
-                        };
-                    } else if (type === 'class') {
-                        if (!parser.currentOpenTag.shorthandClassNames) {
-                            parser.currentOpenTag.shorthandClassNames = [];
-                        }
-
-                        parser.currentOpenTag.shorthandClassNames.push({
-                            value: expression,
-                            rawParts: this.rawParts
-                        });
-                    }
-                }
-            };
-        };
-        parser.enterState(new TagNameShorthandState(this));
+        const shorthand = this.beginPart();
+        this.enterState(new TagNameShorthandState(this));
         return shorthand;
     }
     endTagNameShorthand() {
