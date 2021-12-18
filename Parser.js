@@ -350,17 +350,15 @@ module.exports = class Parser {
 
         if (ignoreAttributes) {
             attributes.length = 0;
-        } else {
+        } else if (parseOptions && parseOptions.relaxRequireCommas !== true) {
             if (currentOpenTag.requiresCommas && attributes.length > 1) {
-                for(let i = 0; i < attributes.length-1; i++) {
-                    if(!attributes[i].endedWithComma) {
-
-
-                        if (!parseOptions || parseOptions.relaxRequireCommas !== true) {
-                            this.notifyError(attributes[i].pos,
-                                'COMMAS_REQUIRED',
-                                'if commas are used, they must be used to separate all attributes for a tag');
-                        }
+                let i = 0;
+                let attribute;
+                while ((attribute = attributes[i++])) {
+                    if (!attribute.endedWithComma) {
+                        this.notifyError(attribute.pos,
+                            'COMMAS_REQUIRED',
+                            'if commas are used, they must be used to separate all attributes for a tag');
                     }
                 }
             }
@@ -659,24 +657,14 @@ module.exports = class Parser {
         // End any text
         this.endText();
 
-        // Make sure all tags in this HTML block are closed
-        const blockStack = this.blockStack;
-        for (let i=blockStack.length-1; i>=0; i--) {
-            const curBlock = blockStack[i];
-            if (curBlock.type === 'html') {
-                // Remove the HTML block from the stack since it has ended
-                blockStack.pop();
-                // We have reached the point where the HTML block started
-                // so we can stop
-                break;
-            } else {
-                // The current block is for an HTML tag and it still open. When a tag is tag is closed
-                // it is removed from the stack
-                this.notifyError(curBlock.pos,
-                    'MISSING_END_TAG',
-                    'Missing ending "' + curBlock.tagName + '" tag');
-                return;
-            }
+        const curBlock = this.blockStack.pop();
+        if (curBlock.type !== 'html') {
+            // The current block is for an HTML tag and it still open. When a tag is tag is closed
+            // it is removed from the stack
+            this.notifyError(curBlock.pos,
+                'MISSING_END_TAG',
+                'Missing ending "' + curBlock.tagName + '" tag');
+            return;
         }
 
         // Resert variables associated with parsing an HTML block
@@ -749,7 +737,7 @@ module.exports = class Parser {
     htmlEOF() {
         this.endText();
         const blockStack = this.blockStack;
-        while(blockStack.length) {
+        while (blockStack.length) {
             const curBlock = peek(blockStack);
             if (curBlock.type === 'tag') {
                 if (curBlock.concise) {
@@ -826,18 +814,18 @@ module.exports = class Parser {
      * @param  {String}  tagName The name of the tag (e.g. "img")
      */
     isOpenTagOnly(tagName) {
-        if (!tagName) {
-            return false;
+        if (tagName) {
+            tagName = tagName.toLowerCase();
+
+            let openTagOnly = this.options.isOpenTagOnly && this.options.isOpenTagOnly(tagName);
+            if (openTagOnly == null) {
+                openTagOnly = htmlTags.isOpenTagOnly(tagName);
+            }
+
+            return openTagOnly;
         }
 
-        tagName = tagName.toLowerCase();
-
-        let openTagOnly = this.options.isOpenTagOnly && this.options.isOpenTagOnly(tagName);
-        if (openTagOnly == null) {
-            openTagOnly = htmlTags.isOpenTagOnly(tagName);
-        }
-
-        return openTagOnly;
+        return false;
     }
     getAndRemoveArgument(expression) {
         const start = expression.lastLeftParenPos;
@@ -945,12 +933,12 @@ module.exports = class Parser {
     }
     lookPastWhitespaceFor(str, start) {
         let ahead = start == null ? 1 : start;
-        while(this.isWhitespaceCode(this.lookAtCharCodeAhead(ahead))) ahead++;
+        while (this.isWhitespaceCode(this.lookAtCharCodeAhead(ahead))) ahead++;
         return !!this.lookAheadFor(str, this.pos + ahead);
     }
     getPreviousNonWhitespaceChar(start) {
         let behind = start == null ? -1 : start;
-        while(this.isWhitespaceCode(this.lookAtCharCodeAhead(behind))) behind--;
+        while (this.isWhitespaceCode(this.lookAtCharCodeAhead(behind))) behind--;
         return this.lookAtCharAhead(behind);
     }
     onlyWhitespaceRemainsOnLine(offset) {
