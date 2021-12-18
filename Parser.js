@@ -21,6 +21,7 @@ const Notifiers = require('./notify-util');
 const operators = require('./operators');
 const ParsedTextContentState = require('./lib/ParsedTextContentState');
 const Part = require('./lib/Part');
+const peek = require('./lib/peek');
 const PlaceholderState = require('./lib/PlaceholderState');
 const RegularExpressionState = require('./lib/RegularExpressionState');
 const ScriptletState = require('./lib/ScriptletState');
@@ -30,14 +31,6 @@ const TagNameShorthandState = require('./lib/TagNameShorthandState');
 const TagNameState = require('./lib/TagNameState');
 const TemplateStringState = require('./lib/TemplateStringState');
 const WithinOpenTagState = require('./lib/WithinOpenTagState');
-
-function peek(array) {
-    var len = array.length;
-    if (!len) {
-        return undefined;
-    }
-    return array[len - 1];
-}
 
 const MODE_HTML = 1;
 const MODE_CONCISE = 2;
@@ -122,7 +115,7 @@ module.exports = class Parser {
             return;
         }
 
-        var pos;
+        let pos;
         while ((pos = this.pos) <= this.maxPos) {
             const ch = data[pos];
             const code = ch.charCodeAt(0);
@@ -224,8 +217,8 @@ module.exports = class Parser {
         return (code <= 32);
     }
     consumeWhitespace() {
-        var ahead = 1;
-        var whitespace = '';
+        let ahead = 1;
+        let whitespace = '';
         while (this.isWhitespaceCode(this.lookAtCharCodeAhead(ahead))) {
             whitespace += this.lookAtCharAhead(ahead++);
         }
@@ -262,12 +255,12 @@ module.exports = class Parser {
         return string;
     }
     endString() {
-        var string = this.endPart();
+        const string = this.endPart();
         string.value = this.notifiers.notifyString(string);
         string.parentState.string(string);
     }
     beginPlaceholder(escape, withinTagName) {
-        var placeholder = this.beginPart();
+        const placeholder = this.beginPart();
         placeholder.value = '';
         placeholder.escape = escape !== false;
         placeholder.type = 'placeholder';
@@ -282,7 +275,7 @@ module.exports = class Parser {
         return placeholder;
     }
     endPlaceholder() {
-        var placeholder = this.endPart();
+        const placeholder = this.endPart();
         this.placeholderDepth--;
         if (!placeholder.withinTemplateString) {
             placeholder.value = this.notifiers.notifyPlaceholder(placeholder);
@@ -319,7 +312,7 @@ module.exports = class Parser {
     beginOpenTag() {
         this.endText();
 
-        var tagInfo = {
+        const tag = {
             type: 'tag',
             tagName: '',
             tagNameParts: null,
@@ -335,17 +328,17 @@ module.exports = class Parser {
         this.withinOpenTag = true;
 
         if (this.beginMixedMode) {
-            tagInfo.beginMixedMode = true;
+            tag.beginMixedMode = true;
             this.beginMixedMode = false;
         }
 
-        this.blockStack.push(tagInfo);
+        this.blockStack.push(tag);
 
-        var currentOpenTag = this.currentOpenTag = tagInfo;
+        this.currentOpenTag = tag;
 
         this.enterState(TagNameState);
 
-        return currentOpenTag;
+        return tag;
     }
     finishOpenTag(selfClosed) {
         const currentOpenTag = this.currentOpenTag;
@@ -353,7 +346,7 @@ module.exports = class Parser {
         const attributes = currentOpenTag.attributes;
         const parseOptions = currentOpenTag.parseOptions;
 
-        var ignoreAttributes = parseOptions && parseOptions.ignoreAttributes === true;
+        const ignoreAttributes = parseOptions && parseOptions.ignoreAttributes === true;
 
         if (ignoreAttributes) {
             attributes.length = 0;
@@ -376,8 +369,8 @@ module.exports = class Parser {
         currentOpenTag.expectedCloseTagName = this.expectedCloseTagName =
             this.substring(currentOpenTag.tagNameStart, currentOpenTag.tagNameEnd);
 
-        var openTagOnly = currentOpenTag.openTagOnly = this.isOpenTagOnly(tagName);
-        var endPos = this.pos;
+        const openTagOnly = currentOpenTag.openTagOnly = this.isOpenTagOnly(tagName);
+        let endPos = this.pos;
 
         if (!this.isConcise) {
             if (selfClosed) {
@@ -398,10 +391,10 @@ module.exports = class Parser {
             tagName = currentOpenTag.tagName = 'div';
         }
 
-        var origState = this.state;
+        const origState = this.state;
         this.notifiers.notifyOpenTag(currentOpenTag);
 
-        var shouldClose = false;
+        let shouldClose = false;
 
         if (selfClosed) {
             shouldClose = true;
@@ -454,8 +447,8 @@ module.exports = class Parser {
         if (!tagName) {
             throw new Error('Illegal state. Invalid tag name');
         }
-        var blockStack = this.blockStack;
-        var lastTag = blockStack.length ? blockStack.pop() : undefined;
+        const blockStack = this.blockStack;
+        let lastTag = blockStack.length ? blockStack.pop() : undefined;
 
         if (pos == null && this.closeTagPos != null) {
             pos = this.closeTagPos;
@@ -489,7 +482,7 @@ module.exports = class Parser {
         this.expectedCloseTagName = lastTag && lastTag.expectedCloseTagName;
     }
     beginExpression(endAfterGroup) {
-        var expression = this.beginPart();
+        const expression = this.beginPart();
         expression.value = '';
         expression.groupStack = [];
         expression.endAfterGroup = endAfterGroup === true;
@@ -498,7 +491,7 @@ module.exports = class Parser {
         return expression;
     }
     endExpression() {
-        var expression = this.endPart();
+        const expression = this.endPart();
         // Probably shouldn't do this, but it makes it easier to test!
         if(expression.parentState.name === 'STATE_ATTRIBUTE_VALUE' && expression.hasUnenclosedWhitespace) {
             expression.value = '('+expression.value+')';
@@ -506,29 +499,29 @@ module.exports = class Parser {
         expression.parentState.expression(expression);
     }
     beginTemplateString() {
-        var templateString = this.beginPart();
+        const templateString = this.beginPart();
         templateString.value = '`';
         this.enterState(TemplateStringState);
         return templateString;
     }
     endTemplateString() {
-        var templateString = this.endPart();
+        const templateString = this.endPart();
         templateString.parentState.templateString(templateString);
     }
     beginRegularExpression() {
-        var regularExpression = this.beginPart();
+        const regularExpression = this.beginPart();
         regularExpression.value = '/';
         this.enterState(RegularExpressionState);
         return regularExpression;
     }
     endRegularExpression() {
-        var regularExpression = this.endPart();
+        const regularExpression = this.endPart();
         regularExpression.parentState.regularExpression(regularExpression);
     }
     beginScriptlet() {
         this.endText();
 
-        var scriptlet = this.beginPart();
+        const scriptlet = this.beginPart();
         scriptlet.tag = true;
         scriptlet.value = '';
         scriptlet.quoteCharCode = null;
@@ -536,21 +529,21 @@ module.exports = class Parser {
         return scriptlet;
     }
     endScriptlet(endPos) {
-        var scriptlet = this.endPart();
+        const scriptlet = this.endPart();
         scriptlet.endPos = endPos;
         this.notifiers.notifyScriptlet(scriptlet);
     }
     beginInlineScript() {
         this.endText();
-        var inlineScript = this.beginPart();
+        const inlineScript = this.beginPart();
         inlineScript.value = '';
         inlineScript.endMatches = [];
         this.enterState(InlineScriptState);
         return inlineScript;
     }
     endInlineScript(endPos) {
-        var inlineScript = this.endPart();
-        var value = inlineScript.value;
+        const inlineScript = this.endPart();
+        const value = inlineScript.value;
         inlineScript.endPos = endPos;
 
         if (value[0] === '{' && value[value.length-1] === '}') {
@@ -565,56 +558,56 @@ module.exports = class Parser {
     beginDocumentType() {
         this.endText();
 
-        var documentType = this.beginPart();
+        const documentType = this.beginPart();
         documentType.value = '';
 
         this.enterState(DtdState);
         return documentType;
     }
     endDocumentType() {
-        var documentType = this.endPart();
+        const documentType = this.endPart();
         this.notifiers.notifyDocumentType(documentType);
     }
     beginDeclaration() {
         this.endText();
 
-        var declaration = this.beginPart();
+        const declaration = this.beginPart();
         declaration.value = '';
         this.enterState(DeclarationState);
         return declaration;
     }
     endDeclaration() {
-        var declaration = this.endPart();
+        const declaration = this.endPart();
         this.notifiers.notifyDeclaration(declaration);
     }
     beginCDATA() {
         this.endText();
 
-        var cdata = this.beginPart();
+        const cdata = this.beginPart();
         cdata.value = '';
         this.enterState(CdataState);
         return cdata;
     }
     endCDATA() {
-        var cdata = this.endPart();
+        const cdata = this.endPart();
         this.notifiers.notifyCDATA(cdata.value, cdata.pos, this.pos + 3);
     }
     beginLineComment() {
-        var comment = this.beginPart();
+        const comment = this.beginPart();
         comment.value = '';
         comment.type = 'line';
         this.enterState(JsCommentLineState);
         return comment;
     }
     beginBlockComment() {
-        var comment = this.beginPart();
+        const comment = this.beginPart();
         comment.value = '';
         comment.type = 'block';
         this.enterState(JsCommentBlockState);
         return comment;
     }
     endJavaScriptComment() {
-        var comment = this.endPart();
+        const comment = this.endPart();
         comment.rawValue = comment.type === 'line' ?
             '//' + comment.value :
             '/*' + comment.value + '*/';
@@ -622,18 +615,18 @@ module.exports = class Parser {
     }
     beginHtmlComment() {
         this.endText();
-        var comment = this.beginPart();
+        const comment = this.beginPart();
         comment.value = '';
         this.enterState(HtmlCommentState);
         return comment;
     }
     endHtmlComment() {
-        var comment = this.endPart();
+        const comment = this.endPart();
         comment.endPos = this.pos + 3;
         this.notifiers.notifyComment(comment);
     }
     beginCheckTrailingWhitespace(handler) {
-        var part = this.beginPart();
+        const part = this.beginPart();
         part.handler = handler;
         if (typeof handler !== 'function') {
             throw new Error('Invalid handler');
@@ -646,7 +639,7 @@ module.exports = class Parser {
         return shorthand;
     }
     endTagNameShorthand() {
-        var shorthand = this.endPart();
+        const shorthand = this.endPart();
         if (shorthand.currentPart) {
             shorthand.currentPart.end();
         }
@@ -669,7 +662,7 @@ module.exports = class Parser {
         // Make sure all tags in this HTML block are closed
         const blockStack = this.blockStack;
         for (let i=blockStack.length-1; i>=0; i--) {
-            var curBlock = blockStack[i];
+            const curBlock = blockStack[i];
             if (curBlock.type === 'html') {
                 // Remove the HTML block from the stack since it has ended
                 blockStack.pop();
@@ -696,29 +689,28 @@ module.exports = class Parser {
         }
     }
     checkForOperator() {
-        var remaining = this.data.substring(this.pos);
-        var matches = operators.patternNext.exec(remaining);
+        const remaining = this.data.substring(this.pos);
+        const matches = operators.patternNext.exec(remaining);
 
         if (matches) {
-            var match = matches[0];
-            var operator = matches[1];
+            const match = matches[0];
+            const operator = matches[1];
 
             if (this.options.legacyCompatibility && operator === '-') {
                 return false;
             }
 
-            var isIgnoredOperator = this.isConcise ? match.includes('[') : match.includes('>');
+            const isIgnoredOperator = this.isConcise ? match.includes('[') : match.includes('>');
             if (!isIgnoredOperator) {
                 this.skip(match.length-1);
                 return match;
             }
         } else {
-            var previous = this.substring(this.pos - operators.longest, this.pos);
-            var match2 = operators.patternPrev.exec(previous);
+            const previous = this.substring(this.pos - operators.longest, this.pos);
+            const match2 = operators.patternPrev.exec(previous);
             if (match2) {
                 this.rewind(1);
-                var whitespace = this.consumeWhitespace();
-                return whitespace;
+                return this.consumeWhitespace();
             }
         }
 
@@ -756,9 +748,9 @@ module.exports = class Parser {
      */
     htmlEOF() {
         this.endText();
-        var blockStack = this.blockStack;
+        const blockStack = this.blockStack;
         while(blockStack.length) {
-            var curBlock = peek(blockStack);
+            const curBlock = peek(blockStack);
             if (curBlock.type === 'tag') {
                 if (curBlock.concise) {
                     this.closeTag(curBlock.expectedCloseTagName);
@@ -840,7 +832,7 @@ module.exports = class Parser {
 
         tagName = tagName.toLowerCase();
 
-        var openTagOnly = this.options.isOpenTagOnly && this.options.isOpenTagOnly(tagName);
+        let openTagOnly = this.options.isOpenTagOnly && this.options.isOpenTagOnly(tagName);
         if (openTagOnly == null) {
             openTagOnly = htmlTags.isOpenTagOnly(tagName);
         }
@@ -853,7 +845,7 @@ module.exports = class Parser {
             // The tag has an argument that we need to slice off
             const end = expression.lastRightParenPos;
             if (end === expression.value.length - 1) {
-                var argument = {
+                const argument = {
                     value: expression.value.substring(start+1, end),
                     pos: expression.pos + start,
                     endPos: expression.pos + end + 1
@@ -874,7 +866,7 @@ module.exports = class Parser {
         if (expression.method) {
             const start = expression.lastLeftParenPos;
             const end = expression.value.length;
-            var method = {
+            const method = {
                 value: 'function' + expression.value.substring(start, end),
                 pos: expression.pos + start,
                 endPos: expression.pos + end
@@ -895,8 +887,8 @@ module.exports = class Parser {
         this.notifiers.notifyError(pos, errorCode, message);
     }
     checkForTypeofOperator() {
-        var remaining = this.data.substring(this.pos);
-        var matches =  /^\s+typeof\s+/.exec(remaining);
+        const remaining = this.data.substring(this.pos);
+        const matches =  /^\s+typeof\s+/.exec(remaining);
 
         if (matches) {
             return matches[0];
@@ -905,8 +897,8 @@ module.exports = class Parser {
         return false;
     }
     checkForTypeofOperatorAtStart() {
-        var remaining = this.data.substring(this.pos);
-        var matches =  /^typeof\s+/.exec(remaining);
+        const remaining = this.data.substring(this.pos);
+        const matches =  /^typeof\s+/.exec(remaining);
 
         if (matches) {
             return matches[0];
@@ -915,11 +907,11 @@ module.exports = class Parser {
         return false;
     }
     outputDeprecationWarning(message) {
-        var srcCharProps = charProps(this.src);
-        var line = srcCharProps.lineAt(this.pos);
-        var column = srcCharProps.columnAt(this.pos);
-        var filename = this.filename;
-        var location = (filename || '(unknown file)') + ':' + line + ':' + column;
+        const srcCharProps = charProps(this.src);
+        const line = srcCharProps.lineAt(this.pos);
+        const column = srcCharProps.columnAt(this.pos);
+        const filename = this.filename;
+        const location = (filename || '(unknown file)') + ':' + line + ':' + column;
         complain(message, { location: location });
     }
     /**
@@ -932,7 +924,7 @@ module.exports = class Parser {
         this.htmlBlockIndent = this.indent;
         this.htmlBlockDelimiter = delimiter;
 
-        var parent = peek(this.blockStack);
+        const parent = peek(this.blockStack);
         this.blockStack.push({
             type: 'html',
             delimiter: delimiter,
@@ -952,12 +944,12 @@ module.exports = class Parser {
         }
     }
     lookPastWhitespaceFor(str, start) {
-        var ahead = start == null ? 1 : start;
+        let ahead = start == null ? 1 : start;
         while(this.isWhitespaceCode(this.lookAtCharCodeAhead(ahead))) ahead++;
         return !!this.lookAheadFor(str, this.pos + ahead);
     }
     getPreviousNonWhitespaceChar(start) {
-        var behind = start == null ? -1 : start;
+        let behind = start == null ? -1 : start;
         while(this.isWhitespaceCode(this.lookAtCharCodeAhead(behind))) behind--;
         return this.lookAtCharAhead(behind);
     }
@@ -968,25 +960,22 @@ module.exports = class Parser {
     checkForClosingTag() {
         // Look ahead to see if we found the closing tag that will
         // take us out of the EXPRESSION state...
-        var match = (
+        const match = (
             this.lookAheadFor('/>') ||
             this.lookAheadFor('/' + peek(this.blockStack).tagName + '>') ||
             this.lookAheadFor('/' + this.expectedCloseTagName + '>')
         );
+        if (!match) return false;
 
-        if (match) {
-            if (this.state.name === 'STATE_JS_COMMENT_LINE') {
-                this.endJavaScriptComment();
-            }
-            this.endText();
-
-            this.closeTag(this.expectedCloseTagName, this.pos, this.pos + 1 + match.length);
-            this.skip(match.length);
-            this.enterState(HtmlContentState);
-            return true;
+        if (this.state.name === 'STATE_JS_COMMENT_LINE') {
+            this.endJavaScriptComment();
         }
+        this.endText();
 
-        return false;
+        this.closeTag(this.expectedCloseTagName, this.pos, this.pos + 1 + match.length);
+        this.skip(match.length);
+        this.enterState(HtmlContentState);
+        return true;
     }
     checkForCDATA() {
         if (this.lookAheadFor('![CDATA[')) {
@@ -1008,8 +997,8 @@ module.exports = class Parser {
         }
     }
     enterParsedTextContentState() {
-        var blockStack = this.blockStack;
-        var last = blockStack.length && blockStack[blockStack.length - 1];
+        const blockStack = this.blockStack;
+        const last = blockStack.length && blockStack[blockStack.length - 1];
 
         if (!last || !last.tagName) {
             throw new Error('The "parsed text content" parser state is only allowed within a tag');
@@ -1031,8 +1020,8 @@ module.exports = class Parser {
         this.enterParsedTextContentState();
     }
     enterStaticTextContentState() {
-        var blockStack = this.blockStack;
-        var last = blockStack.length && blockStack[blockStack.length - 1];
+        const blockStack = this.blockStack;
+        const last = blockStack[blockStack.length - 1];
 
         if (!last || !last.tagName) {
             throw new Error('The "static text content" parser state is only allowed within a tag');

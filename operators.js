@@ -1,4 +1,6 @@
-var operators = exports.operators = [
+'use strict';
+
+const operators = exports.operators = [
     //Multiplicative Operators
     '*', '/', '%',
 
@@ -34,7 +36,7 @@ var operators = exports.operators = [
     '['
 ];
 
-var unary = [
+const unary = [
     'typeof',
     'new',
     'void'
@@ -48,7 +50,6 @@ operators.sort(function(a, b) {
 exports.longest = operators.sort((a, b) => b.length-a.length)[0].length+1;
 exports.patternNext = new RegExp('^\\s*('+operators.map(escapeOperator).join('|')+')\\s*(?!-)');
 exports.patternPrev = new RegExp('[^-+](?:'+operators.concat(unary).map(escapeOperator).join('|')+')(\\s*)$');
-
 
 function escapeOperator(o) {
     if(/^[A-Z]+$/i.test(o)) {
