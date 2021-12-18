@@ -1,7 +1,8 @@
 'use strict';
 
+const {CODE_NEWLINE, CODE_CARRIAGE_RETURN} = require('./lib/constants');
 const AttributeNameState = require('./lib/AttributeNameState');
-const BaseParser = require('./BaseParser');
+const BaseState = require('./lib/BaseState');
 const CdataState = require('./lib/CDATAState');
 const charProps = require('char-props');
 const CheckTrailingWhiteSpaceState = require('./lib/CheckTrailingWhiteSpaceState');
@@ -19,6 +20,7 @@ const JsCommentLineState = require('./lib/JsCommentLineState');
 const Notifiers = require('./notify-util');
 const operators = require('./operators');
 const ParsedTextContentState = require('./lib/ParsedTextContentState');
+const Part = require('./lib/Part');
 const PlaceholderState = require('./lib/PlaceholderState');
 const RegularExpressionState = require('./lib/RegularExpressionState');
 const ScriptletState = require('./lib/ScriptletState');
@@ -28,7 +30,6 @@ const TagNameShorthandState = require('./lib/TagNameShorthandState');
 const TagNameState = require('./lib/TagNameState');
 const TemplateStringState = require('./lib/TemplateStringState');
 const WithinOpenTagState = require('./lib/WithinOpenTagState');
-const BaseState = require('./lib/BaseState');
 
 function peek(array) {
     var len = array.length;
@@ -47,208 +48,189 @@ const BODY_STATIC_TEXT = 2;// Body of a tag is treated as text and placeholders 
 const EMPTY_ATTRIBUTES = [];
 const htmlTags = require('./html-tags');
 
-class TagNamePart {
-    constructor(parent, type) {
-        this.parent = parent;
-        this._parser = parent._parser;
-        this.type = type;
-        this.stringParts = [];
-        this.rawParts = [];
-        this.text = '';
-    }
-    _endText() {
-        const text = this.text;
-        if (!text) return;
-        const parser = this._parser;
-
-        this.stringParts.push(JSON.stringify(text));
-        this.rawParts.push({
-            text: text,
-            pos: parser.pos - text.length,
-            endPos: parser.pos
-        });
-
-        this.text = '';
-    }
-    addPlaceholder(placeholder) {
-        const startPos = placeholder.pos + (placeholder.escape ? 2 : 3);
-        const endPos = placeholder.endPos - 1;
-        this._endText();
-        this.stringParts.push('(' + placeholder.value + ')');
-        this.rawParts.push({
-            expression: this._parser.src.slice(startPos, endPos),
-            pos: startPos,
-            endPos: endPos
-        });
-    }
-    end() {
-        this._endText();
-
-        const expression = this.stringParts.join('+');
-
-        if (this.type === 'id') {
-            this._parser.currentOpenTag.shorthandId = {
-                value: expression,
-                rawParts: this.rawParts
-            };
-        } else if (this.type === 'class') {
-            const parser = this._parser;
-            if (!parser.currentOpenTag.shorthandClassNames) {
-                parser.currentOpenTag.shorthandClassNames = [];
-            }
-
-            parser.currentOpenTag.shorthandClassNames.push({
-                value: expression,
-                rawParts: this.rawParts
-            });
-        }
-    }
-}
-
-class Part {
-    constructor(parser) {
-        this._parser = parser;
-        this.pos = parser.pos;
-        this.parentState = parser.state;
-        this.currentPart = null;
-        this.hasId = false;
-    }
-    beginPart(type) {
-        this.currentPart = new TagNamePart(this, type);
-    }
-}
-
-module.exports = class Parser extends BaseParser {
+module.exports = class Parser {
     constructor(listeners, options) {
-        super(options);
+        this.options = options;
         this.notifiers = new Notifiers(this, listeners);
         const defaultMode = this.defaultMode = options && options.concise === false ? MODE_HTML : MODE_CONCISE;
         this.textParseMode = 'html';
         if (defaultMode === MODE_CONCISE) {
-            this.setInitialState(new ConciseHtmlContentState(this));
+            this.initialState = new ConciseHtmlContentState(this);
         } else {
-            this.setInitialState(new HtmlContentState(this));
+            this.initialState = new HtmlContentState(this);
         }
+        this.pos = -1;
+
+        // The maxPos property is the last absolute character position that is
+        // readable based on the currently received chunks
+        this.maxPos = -1;
+
+        // the current parser state
+        this.state = null;
+
+        // The raw string that we are parsing
+        this.data = this.src = null;
+
+        this.filename = null;
+        this.beginMixedMode = false; // Used as a flag to mark that the next HTML block should enter the parser into HTML mode
+        this.blockStack = []; // Used to keep track of HTML tags and HTML blocks
+        this.closeTagName = undefined; // Used to keep track of the current close tag name as it is being parsed
+        this.closeTagPos = undefined; // Used to keep track of the position of the current closing tag
+        this.currentAttribute = undefined; // Used to reference the current attribute that is being parsed
+        this.currentOpenTag = undefined; // Used to reference the current open tag that is being parsed
+        this.currentPart = undefined; // The current part at the top of the part stack
+        this.endingMixedModeAtEOL = false; // Used as a flag to record that the next EOL to exit HTML mode and go back to concise
+        this.expectedCloseTagName = undefined; // Used to figure out when a text block has been ended (HTML tags are ignored)
+        this.htmlBlockDelimiter = null; // Current delimiter for multiline HTML blocks nested within a concise tag. e.g. "--"
+        this.htmlBlockIndent = null; // Used to hold the indentation for a delimited, multiline HTML block
+        this.indent = ''; // Used to build the indent for the current concise line
+        this.isConcise = this.defaultMode === MODE_CONCISE; // Set to true if parser is currently in concise mode
+        this.isWithinSingleLineHtmlBlock = false; // Set to true if the current block is for a single line HTML block
+        this.partStack = []; // Used to keep track of parts such as CDATA, expressions, declarations, etc.
+        this.placeholderDepth = 0; // Used as an easy way to know if an exptression is within a placeholder
+        this.text = ''; // Used to buffer text that is found within the body of a tag
+        this.withinOpenTag = false; /// Set to true if the parser is within the open tag
     }
-    get beginMixedMode() {
-        return this.context.beginMixedMode;
-    }
-    set beginMixedMode(value) {
-        this.context.beginMixedMode = value;
-    }
-    get isConcise() {
-        return this.context.isConcise;
-    }
-    set isConcise(value) {
-        this.context.isConcise = value;
-    }
-    get text() {
-        return this.context.text;
-    }
-    set text(value) {
-        this.context.text = value;
-    }
-    get currentPart() {
-        return this.context.currentPart;
-    }
-    set currentPart(value) {
-        this.context.currentPart = value;
-    }
-    get currentOpenTag() {
-        return this.context.currentOpenTag;
-    }
-    set currentOpenTag(value) {
-        this.context.currentOpenTag = value;
-    }
-    get currentAttribute() {
-        return this.context.currentAttribute;
-    }
-    set currentAttribute(value) {
-        this.context.currentAttribute = value;
-    }
-    get placeholderDepth() {
-        return this.context.placeholderDepth;
-    }
-    set placeholderDepth(value) {
-        this.context.placeholderDepth = value;
-    }
-    get blockStack() {
-        return this.context.blockStack;
-    }
-    get closeTagName() {
-        return this.context.closeTagName;
-    }
-    set closeTagName(value) {
-        this.context.closeTagName = value;
-    }
-    get closeTagPos() {
-        return this.context.closeTagPos;
-    }
-    set closeTagPos(value) {
-        this.context.closeTagPos = value;
-    }
-    get endingMixedModeAtEOL() {
-        return this.context.endingMixedModeAtEOL;
-    }
-    set endingMixedModeAtEOL(value) {
-        this.context.endingMixedModeAtEOL = value;
-    }
-    get expectedCloseTagName() {
-        return this.context.expectedCloseTagName;
-    }
-    set expectedCloseTagName(value) {
-        this.context.expectedCloseTagName = value;
-    }
-    get htmlBlockDelimiter() {
-        return this.context.htmlBlockDelimiter;
-    }
-    set htmlBlockDelimiter(value) {
-        this.context.htmlBlockDelimiter = value;
-    }
-    get indent() {
-        return this.context.indent;
-    }
-    set indent(value) {
-        this.context.indent = value;
-    }
-    get isWithinSingleLineHtmlBlock() {
-        return this.context.isWithinSingleLineHtmlBlock;
-    }
-    set isWithinSingleLineHtmlBlock(value) {
-        this.context.isWithinSingleLineHtmlBlock = value;
-    }
-    get withinOpenTag() {
-        return this.context.withinOpenTag;
-    }
-    set withinOpenTag(value) {
-        this.context.withinOpenTag = value;
-    }
-    reset() {
-        super.reset();
-        this.context = {
-            beginMixedMode: false, // Used as a flag to mark that the next HTML block should enter the parser into HTML mode
-            blockStack: [], // Used to keep track of HTML tags and HTML blocks
-            closeTagName: undefined, // Used to keep track of the current close tag name as it is being parsed
-            closeTagPos: undefined, // Used to keep track of the position of the current closing tag
-            currentAttribute: undefined, // Used to reference the current attribute that is being parsed
-            currentOpenTag: undefined, // Used to reference the current open tag that is being parsed
-            currentPart: undefined, // The current part at the top of the part stack
-            endingMixedModeAtEOL: false, // Used as a flag to record that the next EOL to exit HTML mode and go back to concise
-            expectedCloseTagName: undefined, // Used to figure out when a text block has been ended (HTML tags are ignored)
-            htmlBlockDelimiter: null, // Current delimiter for multiline HTML blocks nested within a concise tag. e.g. "--"
-            htmlBlockIndent: null, // Used to hold the indentation for a delimited, multiline HTML block
-            indent: '', // Used to build the indent for the current concise line
-            isConcise: this.defaultMode === MODE_CONCISE, // Set to true if parser is currently in concise mode
-            isWithinSingleLineHtmlBlock: false, // Set to true if the current block is for a single line HTML block
-            partStack: [], // Used to keep track of parts such as CDATA, expressions, declarations, etc.
-            placeholderDepth: 0, // Used as an easy way to know if an exptression is within a placeholder
-            text: '', // Used to buffer text that is found within the body of a tag
-            withinOpenTag: false, /// Set to true if the parser is within the open tag
-        };
+    parse(data, filename) {
+        if (data == null) {
+            return;
+        }
+
+        if (Array.isArray(data)) {
+            data = data.join('');
+        }
+
+        this.src = data; // This is the unmodified data used for reporting warnings
+        this.filename = filename;
+        this.data = data;
+        this.maxPos = data.length - 1;
+
+        // Enter initial state
+        if (this.initialState) {
+            this.enterState(this.initialState);
+        }
+
+        // Move to first position
+        // Skip the byte order mark (BOM) sequence
+        // at the beginning of the file if there is one:
+        // - https://en.wikipedia.org/wiki/Byte_order_mark
+        // > The Unicode Standard permits the BOM in UTF-8, but does not require or recommend its use.
+        this.pos = data.charCodeAt(0) === 0xFEFF ? 1 : 0;
+
+        if (!this.state) {
+            // Cannot resume when parser has no state
+            return;
+        }
+
+        var pos;
+        while ((pos = this.pos) <= this.maxPos) {
+            const ch = data[pos];
+            const code = ch.charCodeAt(0);
+            const state = this.state;
+
+            if (code === CODE_NEWLINE) {
+                state.eol(ch);
+                this.pos++;
+                continue;
+            } else if (code === CODE_CARRIAGE_RETURN) {
+                const nextPos = pos + 1;
+                if (nextPos < data.length && data.charCodeAt(nextPos) === CODE_NEWLINE) {
+                    state.eol('\r\n');
+                    this.pos+=2;
+                    continue;
+                }
+            }
+
+            // We assume that every state will have "char" function
+            state.char(ch, code);
+
+            // move to next position
+            this.pos++;
+        }
+
+        const state = this.state;
+        if (state) {
+            state.eof();
+        }
+        this.notifiers.notifyFinish();
     }
     enterState(Type) {
-        if (Type instanceof BaseState) return super.enterState(Type);
-        super.enterState(new Type(this));
+        let state = Type;
+        if (!(Type instanceof BaseState)) {
+            state = new Type(this);
+        }
+
+        if (this.state === state) {
+            // Re-entering the same state can lead to unexpected behavior
+            // so we should throw error to catch these types of mistakes
+            throw new Error('Re-entering the current state is illegal - ' + state.name);
+        }
+
+        const oldState = this.state;
+
+        this.state = state;
+
+        state.enter(oldState);
+    }
+    /**
+     * Look ahead to see if the given str matches the substring sequence
+     * beyond
+     */
+    lookAheadFor(str, startPos) {
+        // Have we read enough chunks to read the string that we need?
+        if (startPos == null) {
+            startPos = this.pos + 1;
+        }
+        const len = str.length;
+        const endPos = startPos + len;
+
+        if (endPos > this.maxPos + 1) {
+            return undefined;
+        }
+
+        const found = this.data.substring(startPos, endPos);
+        return (found === str) ? str : undefined;
+    }
+    /**
+     * Look ahead to a character at a specific offset.
+     * The callback will be invoked with the character
+     * at the given position.
+     */
+     lookAtCharAhead(offset, startPos) {
+        if (startPos == null) {
+            startPos = this.pos;
+        }
+        return this.data.charAt(startPos + offset);
+    }
+    lookAtCharCodeAhead(offset, startPos) {
+        if (startPos == null) {
+            startPos = this.pos;
+        }
+        return this.data.charCodeAt(startPos + offset);
+    }
+    rewind(offset) {
+        this.pos -= offset;
+    }
+    skip(offset) {
+        this.pos += offset;
+    }
+    end() {
+        this.pos = this.maxPos + 1;
+    }
+    substring(pos, endPos) {
+        return this.data.substring(pos, endPos);
+    }
+    isWhitespaceCode(code) {
+        return (code <= 32);
+    }
+    consumeWhitespace() {
+        var ahead = 1;
+        var whitespace = '';
+        while (this.isWhitespaceCode(this.lookAtCharCodeAhead(ahead))) {
+            whitespace += this.lookAtCharAhead(ahead++);
+        }
+        this.skip(whitespace.length);
+        return whitespace;
     }
     enterCloseTagState() {
         this.enterState(CloseTagState);
@@ -258,11 +240,11 @@ module.exports = class Parser extends BaseParser {
     }
     beginPart() {
         const currentPart = this.currentPart = new Part(this);
-        this.context.partStack.push(currentPart);
+        this.partStack.push(currentPart);
         return currentPart;
     }
     endPart() {
-        const partStack = this.context.partStack;
+        const partStack = this.partStack;
         const last = partStack.pop();
         this.endPos = this.pos;
         this.enterState(last.parentState);
@@ -908,10 +890,6 @@ module.exports = class Parser extends BaseParser {
 
         return undefined;
     }
-    parse(data, filename) {
-        super.parse(data, filename);
-        this.notifiers.notifyFinish();
-    }
     notifyError(pos, errorCode, message) {
         this.end();
         this.notifiers.notifyError(pos, errorCode, message);
@@ -986,15 +964,6 @@ module.exports = class Parser extends BaseParser {
     onlyWhitespaceRemainsOnLine(offset) {
         offset = offset == null ? 1 : offset;
         return /^\s*\n/.test(this.substring(this.pos + offset));
-    }
-    consumeWhitespace() {
-        var ahead = 1;
-        var whitespace = '';
-        while(this.isWhitespaceCode(this.lookAtCharCodeAhead(ahead))) {
-            whitespace += this.lookAtCharAhead(ahead++);
-        }
-        this.skip(whitespace.length);
-        return whitespace;
     }
     checkForClosingTag() {
         // Look ahead to see if we found the closing tag that will
